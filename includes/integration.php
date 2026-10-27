@@ -5,7 +5,7 @@ if ( ! class_exists( 'Metrilo_Woo_Analytics_Integration' ) ) :
 
 class Metrilo_Woo_Analytics_Integration extends WC_Integration {
     
-    private $integration_version = '2.0.1';
+    private $integration_version = '2.0.2';
     private $events_queue = array();
     private $single_item_tracked = false;
     private $has_events_in_cookie = false;
@@ -126,23 +126,28 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
     }
 
     public function recent_orders_sync($days_sync){
-        global $wpdb;
         $recent_orders = array();
         // do not accept more than 45 days
         if($days_sync > 45) $days_sync = 45;
-        
-        // prepare query
+
+        // fetch orders through the WC API so it works with both posts and HPOS order storage
         $date_after = date('Y-m-d', strtotime("-{$days_sync} days"));
-        $query = "select id from {$wpdb->posts} where (post_type = 'shop_order') && (post_date >= '{$date_after}') order by id desc";
-        
-        // fetch orders and prepare the order-status hash
-        $order_ids = $wpdb->get_col($query);
+        $order_ids = wc_get_orders(array(
+            'type'         => 'shop_order',
+            'date_created' => '>=' . $date_after,
+            'limit'        => -1,
+            'orderby'      => 'ID',
+            'order'        => 'DESC',
+            'return'       => 'ids',
+        ));
+
+        // prepare the order-status hash
         if(!empty($order_ids)){
             foreach($order_ids as $order_id){
                 try {
-                    $order = new WC_Order($order_id);
-                    if(!empty($order) && !empty($order->id)){
-                        $order_id = (string)$order->id;
+                    $order = wc_get_order($order_id);
+                    if(!empty($order) && $order->get_id()){
+                        $order_id = (string)$order->get_id();
                         $recent_orders[$order_id] = $this->get_order_status($order);
                     }
                 }catch(Exception $e){
@@ -310,7 +315,7 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
     }
 
     public function stringIsPresent($string){
-        return trim($string) != null;
+        return trim((string)$string) !== '';
     }
     
     public function getImgUrl($productId) {
@@ -319,7 +324,6 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
     }
 
     public function sync_orders_chunk($specific_order_ids = false){
-        global $wpdb;
     
     if(!$specific_order_ids){
         $order_ids = false;
@@ -329,7 +333,14 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
             $chunk_offset = $chunk_page * $this->orders_per_import_chunk;
     
             // fetch order IDs
-            $order_ids = $wpdb->get_col("select id from {$wpdb->posts} where post_type = 'shop_order' order by id asc limit {$this->orders_per_import_chunk} offset {$chunk_offset}");
+            $order_ids = wc_get_orders(array(
+                'type'    => 'shop_order',
+                'limit'   => $this->orders_per_import_chunk,
+                'offset'  => $chunk_offset,
+                'orderby' => 'ID',
+                'order'   => 'ASC',
+                'return'  => 'ids',
+            ));
     
             if($chunk_page == 0) {
                 $this->project_activity('import_start');
@@ -344,9 +355,10 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
             foreach($order_ids as $order_id){
 
                 try {
-                    $order     = new WC_Order($order_id);
-                    $has_email = $this->stringIsPresent(get_post_meta($order_id, '_billing_email', true));
-                    $has_phone = $this->stringIsPresent(get_post_meta($order_id, '_billing_phone', true));
+                    $order     = wc_get_order($order_id);
+                    if(!$order) continue;
+                    $has_email = $this->stringIsPresent($order->get_billing_email());
+                    $has_phone = $this->stringIsPresent($order->get_billing_phone());
                     
                     if(!empty($order_id) && !empty($order) && ($has_email || $has_phone)){
 
@@ -362,7 +374,7 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
                             $call_params = array('use_ip' => $customer_ip);
                         }
 
-                        $order_time_in_ms = get_post_time('U', true, $order_id) * 1000;
+                        $order_time_in_ms = $this->get_order_time_in_ms($order);
 
                         // add the items data to the order
                         $order_items = $order->get_items();
@@ -413,10 +425,10 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
     }
 
     public function prepare_order_identity_data($order){
-        $email     = get_post_meta($this->object_property($order, 'order', 'id'), '_billing_email', true);
-        $phone     = get_post_meta($this->object_property($order, 'order', 'id'), '_billing_phone', true);
-        $firstName = get_post_meta($this->object_property($order, 'order', 'id'), '_billing_first_name', true);
-        $lastName  = get_post_meta($this->object_property($order, 'order', 'id'), '_billing_last_name', true);
+        $email     = $order->get_billing_email();
+        $phone     = $order->get_billing_phone();
+        $firstName = $order->get_billing_first_name();
+        $lastName  = $order->get_billing_last_name();
     
         $identity_data = array(
             'email'         => $email ? $email : $phone . '@phone_email',
@@ -801,14 +813,15 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
 
     public function new_order_event($order_id){
         // fetch the order
-        $order = new WC_Order($order_id);
+        $order = wc_get_order($order_id);
+        if(!$order) return;
 
         $call_params = false;
     
-        $email     = get_post_meta($order_id, '_billing_email', true);
-        $phone     = get_post_meta($order_id, '_billing_phone', true);
-        $firstName = get_post_meta($order_id, '_billing_first_name', true);
-        $lastName  = get_post_meta($order_id, '_billing_last_name', true);
+        $email     = $order->get_billing_email();
+        $phone     = $order->get_billing_phone();
+        $firstName = $order->get_billing_first_name();
+        $lastName  = $order->get_billing_last_name();
         
         if(!$this->stringIsPresent($email) && !$this->stringIsPresent($phone)) {
             return;
@@ -838,7 +851,7 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
         }
 
         // prepare the order time
-        $order_time_in_ms = get_post_time('U', true, $order_id) * 1000;
+        $order_time_in_ms = $this->get_order_time_in_ms($order);
 
         // add the items data to the order
         $order_items = $order->get_items();
@@ -917,7 +930,8 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
     public function order_status_changed($order_id, $old_status = false, $new_status = false){
         try {
 
-            $order = new WC_Order($order_id);
+            $order = wc_get_order($order_id);
+            if(!$order) return;
 
             // prepare the order data
             $purchase_params = $this->prepare_order_params($order, array('old_status' => $old_status, 'new_status' => $new_status));
@@ -930,7 +944,7 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
                 $call_params = array('use_ip' => $customer_ip);
             }
 
-            $order_time_in_ms = get_post_time('U', true, $order_id) * 1000;
+            $order_time_in_ms = $this->get_order_time_in_ms($order);
 
             // add the items data to the order
             $order_items = $order->get_items();
@@ -1168,7 +1182,8 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
 
     public function session_get($k){
         if(!is_object($this->woo->session)){
-            return isset($_COOKIE[$k]) ? $_COOKIE[$k] : false;
+            // WordPress adds slashes to $_COOKIE (wp_magic_quotes), the WC session stores values as they are
+            return isset($_COOKIE[$k]) ? wp_unslash($_COOKIE[$k]) : false;
         }
         return $this->woo->session->get($k);
     }
@@ -1176,7 +1191,7 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
     public function session_set($k, $v){
         if(!is_object($this->woo->session)){
             @setcookie($k, $v, time() + 43200, COOKIEPATH, COOKIE_DOMAIN);
-            $_COOKIE[$k] = $v;
+            $_COOKIE[$k] = wp_slash($v);
             return true;
         }
         return $this->woo->session->set($k, $v);
@@ -1194,20 +1209,19 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
         $items = array();
         $data = $this->session_get($this->get_cookie_name());
         if(!empty($data)){
-            $data = stripslashes($data);
             $items = json_decode($data, true);
         }
-        return $items;
+        // json_decode returns null on malformed data - count(null) is a fatal TypeError on PHP 8
+        return is_array($items) ? $items : array();
     }
 
     public function get_identify_data_in_cookie(){
         $identify = array();
         $data = $this->session_get($this->get_do_identify_cookie_name());
         if(!empty($data)){
-            $data = stripslashes($data);
             $identify = json_decode($data, true);
         }
-        return $identify;
+        return is_array($identify) ? $identify : array();
     }
 
     public function clear_items_in_cookie(){
@@ -1215,8 +1229,14 @@ class Metrilo_Woo_Analytics_Integration extends WC_Integration {
         $this->session_set($this->get_do_identify_cookie_name(), json_encode(array()));
     }
 
+    public function get_order_time_in_ms($order){
+        $date_created = $order->get_date_created();
+        return $date_created ? $date_created->getTimestamp() * 1000 : time() * 1000;
+    }
+
     public function get_order_ip($order_id){
-        $ip_address = get_post_meta($order_id, '_customer_ip_address', true);
+        $order = wc_get_order($order_id);
+        $ip_address = $order ? $order->get_customer_ip_address() : '';
         if(strpos($ip_address, '.') !== false){
             return $ip_address;
         }
