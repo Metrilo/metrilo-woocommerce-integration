@@ -3,7 +3,7 @@
  * Plugin Name: Metrilo for WooCommerce
  * Plugin URI: https://www.metrilo.com/woocommerce-analytics
  * Description: One-click WooCommerce integration with Metrilo eCommerce Analytics
- * Version: 2.0.1
+ * Version: 2.0.2
  * Author: Metrilo
  * Author URI: https://www.metrilo.com/?ref=wpplugin
  * License: GPLv2 or later
@@ -20,6 +20,7 @@ class Metrilo_Woo_Analytics {
 
 	public function __construct() {
 		add_action('plugins_loaded', array($this, 'init'));
+		add_action('before_woocommerce_init', array($this, 'declare_hpos_compatibility'));
     add_filter('query_vars', array($this, 'add_clear_query_var'), 10, 1);
     add_filter('query_vars', array($this, 'add_endpoint_query_vars'), 10, 1);
 	}
@@ -36,6 +37,12 @@ class Metrilo_Woo_Analytics {
 			// throw an admin error if you like
 		}
 	}
+
+  public function declare_hpos_compatibility(){
+    if ( class_exists( '\Automattic\WooCommerce\Utilities\FeaturesUtil' ) ) {
+      \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+    }
+  }
 
   public function add_clear_query_var($vars){
     $vars[] = 'metrilo_clear';

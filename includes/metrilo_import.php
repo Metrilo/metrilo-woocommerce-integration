@@ -14,10 +14,14 @@ class Metrilo_Import {
 
 	public function prepare_import(){
 
-		global $wpdb;
-
-    // prepare how many orders should be imported
-    $this->orders_total = (int)$wpdb->get_var("select count(id) from {$wpdb->posts} where post_type = 'shop_order' order by id asc");
+    // prepare how many orders should be imported (WC API, works with both posts and HPOS order storage)
+    $orders = wc_get_orders(array(
+      'type'     => 'shop_order',
+      'limit'    => 1,
+      'return'   => 'ids',
+      'paginate' => true,
+    ));
+    $this->orders_total = (int)$orders->total;
 
 	}
 
